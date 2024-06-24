@@ -1,0 +1,221 @@
+version: "3.2"
+
+# Common configuration extensions and fragments
+# https://docs.docker.com/compose/compose-file/10-fragments/
+# https://docs.docker.com/compose/compose-file/11-extension/
+x-servarr-common: &servarr-common
+  networks:
+    - servarr
+  environment: &servarr-env
+    PUID: "1000"
+    PGID: "1000"
+    UMASK: "002"
+    TZ: Europe/Paris
+  restart: unless-stopped
+  labels:
+    autoheal: true
+
+services:
+  # Dashboard
+  homarr:
+    <<: *servarr-common
+    image: ghcr.io/ajnart/homarr:latest
+    container_name: homarr
+    hostname: homarr
+    ports:
+      - 7575:7575
+    volumes:
+      - ./config/homarr/config:/app/data/configs
+      - ./config/homarr/assets:/app/public/icons
+      - ./config/homarr/data:/data
+
+  # Movies library manager
+  radarr:
+    <<: *servarr-common
+    image: ghcr.io/hotio/radarr:latest
+    container_name: radarr
+    hostname: radarr
+    ports:
+      - 7878:7878
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./config/radarr:/config
+      - ./data:/data
+    depends_on:
+      - prowlarr
+
+  # TV shows library manager
+  sonarr:
+    <<: *servarr-common
+    image: ghcr.io/hotio/sonarr:latest
+    container_name: sonarr
+    hostname: sonarr
+    ports:
+      - 8989:8989
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./config/sonarr:/config
+      - ./data:/data
+    depends_on:
+      - prowlarr
+
+  # Music library manager
+  lidarr:
+    <<: *servarr-common
+    image: ghcr.io/hotio/lidarr
+    container_name: lidarr
+    hostname: lidarr
+    ports:
+      - 8686:8686
+    volumes:
+      - ./config/lidarr:/config
+      - ./data:/data
+    depends_on:
+      - prowlarr
+
+  # Bonk library manager
+  whisparr:
+    <<: *servarr-common
+    image: ghcr.io/hotio/whisparr
+    container_name: whisparr
+    hostname: whisparr
+    ports:
+      - 6969:6969
+    volumes:
+      - ./config/whisparr:/config
+      - ./data:/data
+    depends_on:
+      - prowlarr
+
+#  # Subtitles library manager
+#  bazarr:
+#    <<: *servarr-common
+#    image: ghcr.io/hotio/bazarr:latest
+#    container_name: bazarr
+#    hostname: bazarr
+#    ports:
+#      - 6767:6767
+#    volumes:
+#      - /etc/localtime:/etc/localtime:ro
+#      - ./config/bazarr:/config
+#      - ./data/media:/data/media
+#    depends_on:
+#      - sonarr
+#      - radarr
+
+  # Usenet client
+  nzbget:
+    <<: *servarr-common
+    image: ghcr.io/hotio/nzbget
+    container_name: nzbget
+    hostname: nzbget
+    ports:
+      - 6789:6789
+    volumes:
+      - ./config/nzbget:/config
+      - ./data/usenet:/data/usenet
+
+  # Torrent/Usenet indexers aggregator
+  prowlarr:
+    <<: *servarr-common
+    image: ghcr.io/hotio/prowlarr
+    container_name: prowlarr
+    hostname: prowlarr
+    ports:
+      - 9696:9696
+    volumes:
+      - ./config/prowlarr:/config
+    depends_on:
+      - flaresolverr
+      - qbittorrent
+      - nzbget
+
+  # Torrent client
+  qbittorrent:
+    <<: *servarr-common
+    image: ghcr.io/hotio/qbittorrent
+    container_name: qbittorrent
+    hostname: qbittorrent
+    ports:
+      - 8080:8080
+    environment:
+      <<: *servarr-env
+      WEBUI_PORTS: 8080/tcp,8080/udp
+    volumes:
+      - ./config/qbittorrent:/config
+      - ./data/torrents:/data/torrents
+
+  # Decent Web UI for qBittorrent
+  flood:
+    <<: *servarr-common
+    image: jesec/flood
+    container_name: flood
+    hostname: flood
+    command: --port 3001 --allowedpath /data
+    ports:
+      - 3001:3001
+    environment:
+      <<: *servarr-env
+      HOME: /config
+    volumes:
+      - ./config/flood/config:/config
+      - ./config/flood/data:/data
+    depends_on:
+      - qbittorrent
+
+  # Media player
+  # Plex's become trashy (requires account)
+  jellyfin:
+    image: ghcr.io/hotio/jellyfin
+    container_name: jellyfin
+    hostname: jellyfin
+    restart: unless-stopped
+    # For DLNA support
+    network_mode: host
+    #ports:
+    #  - 8096:8096
+    environment:
+      <<: *servarr-env
+    volumes:
+      - ./config/jellyfin:/config
+      - ./data/media:/data/media
+    labels:
+      autoheal: true
+
+  # Proxy to bypass CloudFlare anti-bot/ddos protection
+  flaresolverr:
+    <<: *servarr-common
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    hostname: flaresolverr
+    ports:
+      - 8191:8191
+    environment:
+      <<: *servarr-env
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_HTML: ${LOG_HTML:-false}
+      CAPTCHA_SOLVER: ${CAPTCHA_SOLVER:-none}
+
+  # Autorestart unhealthy containers
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: autoheal
+    hostname: autoheal
+    restart: always
+    network_mode: none
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: 10
+      #AUTOHEAL_START_PERIOD: 0
+      #AUTOHEAL_DEFAULT_STOP_TIMEOUT: 10
+      #AUTOHEAL_ONLY_MONITOR_RUNNING: false
+      #DOCKER_SOCK: /var/run/docker.sock
+      #CURL_TIMEOUT: 30
+      #WEBHOOK_URL:
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+
+networks:
+  servarr:
+    driver: bridge
